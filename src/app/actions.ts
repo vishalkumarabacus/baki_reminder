@@ -1,7 +1,7 @@
 "use server";
 
 import prisma from "../lib/prisma";
-import bcrypt from "bcrypt";
+import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 
 const JWT_SECRET = process.env.JWT_SECRET || "baki_super_secret_key_2026";
@@ -36,9 +36,9 @@ export async function loginOrRegister(phone: string, pin: string, isRegister: bo
         user = await prisma.user.update({ where: { id: user.id }, data: { auth_token: token } });
     } else {
         if (!user) return { error: "Account not found. Please Register." };
-        
+
         const isValid = await bcrypt.compare(pin, user.pin);
-        
+
         // Temporary fallback to plaintext migration if they had a plaintext PIN in the database
         if (!isValid && user.pin !== pin) {
             return { error: "Invalid PIN." };
@@ -81,7 +81,7 @@ export async function getDashboardData(token: string) {
         where: { user_id: user.id },
         orderBy: { created_at: 'desc' }
     });
-    
+
     // Instead of sending all entries to the client, we query and aggregate them on the server!
     const entries = await prisma.entry.findMany({
         where: { user_id: user.id },
