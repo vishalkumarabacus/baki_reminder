@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useMemo, useRef } from "react";
-import { loginOrRegister, getDashboardData, addCustomer, addEntry, updateEntryStatus, updateSettings, saveNotification } from "./actions";
+import { loginOrRegister, getDashboardData, addCustomer, addEntry, updateEntryStatus, updateSettings, saveNotification, getCustomerEntries } from "./actions";
 
 // Types
 type Screen = "splash" | "login" | "dashboard" | "customers" | "ledger" | "settings";
@@ -19,6 +19,8 @@ export default function App() {
   const [settings, setSettings] = useState({ name: "User", bizName: "My Shop", lang: "en", template: "" });
   const [activeCustomer, setActiveCustomer] = useState<Customer | null>(null);
   const [notifications, setNotifications] = useState<Notification[]>([]);
+  const [calculations, setCalculations] = useState({ totalPending: 0, dueToday: 0, overdue: 0, balances: {} as Record<string, number>, statuses: {} as Record<string, string> });
+  const [ledgerEntries, setLedgerEntries] = useState<Entry[]>([]);
 
   // Selection state
   const [selectMode, setSelectMode] = useState(false);
@@ -30,7 +32,10 @@ export default function App() {
 
   // Filtering States
   const [search, setSearch] = useState("");
-  const [ledgerDateFilter, setLedgerDateFilter] = useState<string>(""); // YYYY-MM format
+  const [ledgerDateFilter, setLedgerDateFilter] = useState<string>(() => {
+    const d = new Date();
+    return `${d.getFullYear()}-${(d.getMonth() + 1).toString().padStart(2, '0')}`;
+  }); // YYYY-MM format
 
   // Pull To Refresh States
   const [pullY, setPullY] = useState(0);
@@ -55,9 +60,10 @@ export default function App() {
     const data = await getDashboardData(t);
     if (!data.error) {
       setCustomers(data.customers as Customer[]);
-      setEntries(data.entries as Entry[]);
-      setNotifications(data.notifications as Notification[]);
+      if (data.entries) setEntries(data.entries as Entry[]);
+      if (data.notifications) setNotifications(data.notifications as Notification[]);
       if (data.user) setSettings({ name: data.user.name || "User", bizName: data.user.bizName || "Shop", lang: data.user.lang || "en", template: data.user.template || "" });
+      if (data.calculations) setCalculations(data.calculations);
     }
   }
 
@@ -93,49 +99,15 @@ export default function App() {
     startY.current = 0;
   };
 
-  // Derived Calculations
-  const calculations = useMemo(() => {
-    let dueToday = 0;
-    let overdue = 0;
-
-    // Customer Balances Map
-    const balances: Record<string, number> = {};
-    const statuses: Record<string, string> = {};
-
-    customers.forEach(c => balances[c.id] = 0);
-
-    entries.forEach(e => {
-      const amt = Number(e.amount) || 0;
-      if (e.type === 'debit') {
-        balances[e.customer_id] = (balances[e.customer_id] || 0) + amt;
-        if (e.status !== 'paid') {
-          const d = new Date(e.due_date || new Date());
-          const today = new Date();
-          today.setHours(0, 0, 0, 0);
-          d.setHours(0, 0, 0, 0);
-          if (d.getTime() < today.getTime()) overdue += amt;
-          if (d.getTime() === today.getTime()) dueToday += amt;
-        }
-      }
-      if (e.type === 'credit') {
-        balances[e.customer_id] = (balances[e.customer_id] || 0) - amt;
-      }
-    });
-
-    let totalPending = 0;
-    customers.forEach(c => {
-      const b = balances[c.id] || 0;
-      if (b > 0) totalPending += b;
-
-      if (b <= 0) statuses[c.id] = 'paid';
-      else statuses[c.id] = 'pending';
-    });
-
-    if (overdue > totalPending) overdue = totalPending;
-    if (dueToday > totalPending) dueToday = totalPending;
-
-    return { totalPending, dueToday, overdue, balances, statuses };
-  }, [customers, entries]);
+  // Load Individual Ledger
+  const loadLedger = async (c: Customer) => {
+    setActiveCustomer(c);
+    navTo('ledger');
+    const data = await getCustomerEntries(token, c.id);
+    if (!data.error && Array.isArray(data)) {
+      setLedgerEntries(data);
+    }
+  };
 
   const t = (key: string) => {
     const en: Record<string, string> = { home: 'Home', customers: 'Customers', settings: 'Settings', pending: 'Total Pending', due: 'Due Today', overdue: 'Overdue', login: 'Secure Account', send: 'Send WhatsApp' };
@@ -145,13 +117,18 @@ export default function App() {
 
   const fmt = (n: number) => "₹" + Math.max(0, n).toLocaleString('en-IN');
 
-  const navTo = (v: Screen) => { setView(v); setSheet(null); setSearch(""); setLedgerDateFilter(""); setSelectedCustomers([]); setSelectMode(false); }
+  const navTo = (v: Screen) => {
+    setView(v); setSheet(null); setSearch("");
+    const d = new Date();
+    setLedgerDateFilter(`${d.getFullYear()}-${(d.getMonth() + 1).toString().padStart(2, '0')}`);
+    setSelectedCustomers([]); setSelectMode(false);
+  }
 
   const filteredCustomers = customers.filter(c => c.name.toLowerCase().includes(search.toLowerCase()) || c.phone.includes(search));
 
-  let ledgerEntries = activeCustomer ? entries.filter(e => e.customer_id === activeCustomer.id) : [];
+  let filteredLedgerEntries = ledgerEntries;
   if (ledgerDateFilter) {
-    ledgerEntries = ledgerEntries.filter(e => {
+    filteredLedgerEntries = filteredLedgerEntries.filter(e => {
       const d = new Date(e.created_at);
       const mm = (d.getMonth() + 1).toString().padStart(2, '0');
       return `${d.getFullYear()}-${mm}` === ledgerDateFilter;
@@ -252,7 +229,7 @@ export default function App() {
                     {entries.slice(0, 5).map(e => {
                       const c = customers.find(x => x.id === e.customer_id);
                       return (
-                        <div key={e.id} className="ripple-click p-3.5 flex justify-between items-center hover:bg-slate-50 rounded-2xl cursor-pointer transition-colors" onClick={() => { setActiveCustomer(c || null); navTo('ledger') }}>
+                        <div key={e.id} className="ripple-click p-3.5 flex justify-between items-center hover:bg-slate-50 rounded-2xl cursor-pointer transition-colors" onClick={() => { if (c) loadLedger(c) }}>
                           <div className="flex items-center gap-3.5">
                             <div className={`w-11 h-11 rounded-full flex items-center justify-center font-black text-lg shadow-sm border ${e.type === 'credit' ? 'bg-[#e8f7ec] text-[#12a150] border-green-100' : 'bg-[#fce8e8] text-[#d92c2c] border-red-100'}`}>
                               {e.type === 'credit' ? '↓' : '↑'}
@@ -300,7 +277,7 @@ export default function App() {
                           if (isSelected) setSelectedCustomers(selectedCustomers.filter(id => id !== c.id));
                           else setSelectedCustomers([...selectedCustomers, c.id]);
                         } else {
-                          setActiveCustomer(c); navTo('ledger');
+                          loadLedger(c);
                         }
                       }} className={`ripple-click bg-white p-4.5 rounded-[1.2rem] shadow-sm border flex justify-between items-center cursor-pointer hover:shadow-md transition-all ${isSelected ? 'border-indigo-400 bg-indigo-50/50 ring-2 ring-indigo-100' : 'border-slate-100'}`}>
                         <div className="flex items-center gap-4">
@@ -355,7 +332,7 @@ export default function App() {
                     <span className="text-lg">🚪</span> Disconnect Secure Account
                   </button>
                 </div>
-                <p className="text-center text-[10px] font-black text-slate-300 mt-8 uppercase tracking-[0.2em]">Next.js Market Version 1.0 🚀</p>
+                <p className="text-center text-[10px] font-black text-slate-300 mt-8 uppercase tracking-[0.2em]">Baki Reminder Pro 1.0 🚀</p>
               </div>
             )}
 
@@ -396,7 +373,7 @@ export default function App() {
                   </div>
 
                   <div className="bg-white rounded-[2rem] p-2 shadow-sm border border-slate-100 flex flex-col gap-1">
-                    {ledgerEntries.map(e => (
+                    {filteredLedgerEntries.map((e: any) => (
                       <div key={e.id} onClick={() => { if (e.status === 'pending' && e.type === 'debit') { setSheet('update_status'); setSheetData(e); } }} className="ripple-click p-4 rounded-2xl flex items-center gap-3.5 hover:bg-slate-50 cursor-pointer transition-colors">
                         <div className={`w-11 h-11 rounded-full flex items-center justify-center font-black text-lg flex-shrink-0 border ${e.type === 'credit' ? 'bg-[#e8f7ec] text-[#12a150] border-green-100' : 'bg-[#fce8e8] text-[#d92c2c] border-red-100'}`}>
                           {e.type === 'credit' ? '↓' : '↑'}
@@ -413,7 +390,7 @@ export default function App() {
                         </div>
                       </div>
                     ))}
-                    {ledgerEntries.length === 0 && <div className="text-center py-12 px-4 rounded-3xl border-2 border-dashed border-slate-100 m-2"><p className="text-3xl mb-2 opacity-50">📑</p><p className="font-bold text-slate-400">{ledgerDateFilter ? "No entries in this month." : "No entries yet."}</p></div>}
+                    {filteredLedgerEntries.length === 0 && <div className="text-center py-12 px-4 rounded-3xl border-2 border-dashed border-slate-100 m-2"><p className="text-3xl mb-2 opacity-50">📑</p><p className="font-bold text-slate-400">{ledgerDateFilter ? "No entries in this month." : "No entries yet."}</p></div>}
                   </div>
                 </div>
               </div>
@@ -474,7 +451,7 @@ export default function App() {
             {sheet === 'reminder' && activeCustomer && <ReminderSheet activeCustomer={activeCustomer} settings={settings} calculations={calculations} fmt={fmt} setSheet={setSheet} token={token} onSuccess={() => fetchData(token)} />}
             {sheet === 'bulk_reminder' && <BulkReminderSheet selectedCustomers={selectedCustomers} customers={customers} settings={settings} calculations={calculations} fmt={fmt} setSheet={setSheet} token={token} onSuccess={() => fetchData(token)} />}
             {sheet === 'update_status' && sheetData && <UpdateStatusForm token={token} entry={sheetData} onSuccess={() => { fetchData(token); setSheet(null); }} />}
-            {sheet === 'notifications' && <NotificationsSheet notifications={notifications} customers={customers} setActiveCustomer={setActiveCustomer} setSheet={setSheet} navTo={navTo} />}
+            {sheet === 'notifications' && <NotificationsSheet notifications={notifications} customers={customers} loadLedger={loadLedger} setSheet={setSheet} />}
           </div>
         </>
       )}
@@ -729,7 +706,7 @@ function UpdateStatusForm({ token, entry, onSuccess }: any) {
   )
 }
 
-function NotificationsSheet({ notifications, customers, setActiveCustomer, setSheet, navTo }: any) {
+function NotificationsSheet({ notifications, customers, loadLedger, setSheet }: any) {
   return (
     <div className="flex flex-col h-full max-h-[70vh]">
       <h3 className="text-2xl font-black mb-1 p-1 tracking-tight drop-shadow-sm text-slate-800 flex items-center gap-2">🔔 Alerts Sent <span className="bg-indigo-100 text-indigo-700 text-xs px-2 py-0.5 rounded-full">{notifications.length}</span></h3>
@@ -739,7 +716,7 @@ function NotificationsSheet({ notifications, customers, setActiveCustomer, setSh
         {notifications.map((n: any) => {
           const c = customers.find((x: any) => x.id === n.customer_id);
           return (
-            <div key={n.id} onClick={() => { if (c) { setActiveCustomer(c); navTo('ledger'); } }} className="ripple-click p-4 bg-slate-50 border border-slate-100 rounded-[1.2rem] flex items-start gap-3.5 cursor-pointer hover:bg-slate-100 transition-colors">
+            <div key={n.id} onClick={() => { if (c) { loadLedger(c); } }} className="ripple-click p-4 bg-slate-50 border border-slate-100 rounded-[1.2rem] flex items-start gap-3.5 cursor-pointer hover:bg-slate-100 transition-colors">
               <div className="w-10 h-10 rounded-full bg-green-100 text-green-600 flex items-center justify-center text-lg flex-shrink-0 shadow-inner">💬</div>
               <div className="flex-1 min-w-0">
                 <p className="font-bold text-slate-800 leading-tight mb-0.5">{c?.name || "Unknown"} <span className="text-[10px] font-medium text-slate-400 block sm:inline mt-0.5 sm:mt-0 sm:ml-2">{new Date(n.created_at).toLocaleString()}</span></p>
