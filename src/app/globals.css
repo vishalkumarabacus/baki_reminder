@@ -1,0 +1,25 @@
+@import "tailwindcss";
+
+@layer utilities {
+    .ripple-click {
+        transition: transform 0.1s ease-in-out;
+    }
+
+    .ripple-click:active {
+        transform: scale(0.96);
+    }
+}
+
+/* Custom Webkit Scrollbar */
+::-webkit-scrollbar {
+    width: 5px;
+}
+
+::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+    background: #cbd5e1;
+    border-radius: 10px;
+}
