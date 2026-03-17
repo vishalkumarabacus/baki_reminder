@@ -104,7 +104,7 @@ export default function App() {
     setActiveCustomer(c);
     navTo('ledger');
     const data = await getCustomerEntries(token, c.id);
-    if (!data.error && Array.isArray(data)) {
+    if (Array.isArray(data)) {
       setLedgerEntries(data);
     }
   };
