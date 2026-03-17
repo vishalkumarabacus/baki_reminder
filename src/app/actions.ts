@@ -16,49 +16,54 @@ function generateJwt(userId: number) {
 
 // ================= AUTH =================
 export async function loginOrRegister(phone: string, pin: string, isRegister: boolean, name?: string, bizName?: string) {
-    let user = await prisma.user.findUnique({ where: { phone } });
+    try {
+        let user = await prisma.user.findUnique({ where: { phone } });
 
-    if (isRegister) {
-        if (user) return { error: "Number already registered. Please Login." };
-        const hashedPin = await bcrypt.hash(pin, 10);
-        user = await prisma.user.create({
-            data: {
-                phone,
-                pin: hashedPin,
-                auth_token: genToken(),
-                name: name || "Shop Owner",
-                business_name: bizName || "My Shop",
-                lang: "en",
-                reminder_template: "Namaste {name}, aapki {amount} ki payment {date} tak due hai. Kripya payment karein. - {biz}"
+        if (isRegister) {
+            if (user) return { error: "Number already registered. Please Login." };
+            const hashedPin = await bcrypt.hash(pin, 10);
+            user = await prisma.user.create({
+                data: {
+                    phone,
+                    pin: hashedPin,
+                    auth_token: genToken(),
+                    name: name || "Shop Owner",
+                    business_name: bizName || "My Shop",
+                    lang: "en",
+                    reminder_template: "Namaste {name}, aapki {amount} ki payment {date} tak due hai. Kripya payment karein. - {biz}"
+                }
+            });
+            const token = generateJwt(user.id);
+            user = await prisma.user.update({ where: { id: user.id }, data: { auth_token: token } });
+        } else {
+            if (!user) return { error: "Account not found. Please Register." };
+
+            const isValid = await bcrypt.compare(pin, user.pin);
+
+            // Temporary fallback to plaintext migration if they had a plaintext PIN in the database
+            if (!isValid && user.pin !== pin) {
+                return { error: "Invalid PIN." };
+            } else if (!isValid && user.pin === pin) {
+                // They logged in with the old plaintext PIN, let's hash it and update the DB!
+                const newHashedPin = await bcrypt.hash(pin, 10);
+                await prisma.user.update({ where: { phone }, data: { pin: newHashedPin } });
             }
-        });
-        const token = generateJwt(user.id);
-        user = await prisma.user.update({ where: { id: user.id }, data: { auth_token: token } });
-    } else {
-        if (!user) return { error: "Account not found. Please Register." };
 
-        const isValid = await bcrypt.compare(pin, user.pin);
-
-        // Temporary fallback to plaintext migration if they had a plaintext PIN in the database
-        if (!isValid && user.pin !== pin) {
-            return { error: "Invalid PIN." };
-        } else if (!isValid && user.pin === pin) {
-            // They logged in with the old plaintext PIN, let's hash it and update the DB!
-            const newHashedPin = await bcrypt.hash(pin, 10);
-            await prisma.user.update({ where: { phone }, data: { pin: newHashedPin } });
+            const token = generateJwt(user.id);
+            user = await prisma.user.update({
+                where: { phone },
+                data: { auth_token: token }
+            });
         }
 
-        const token = generateJwt(user.id);
-        user = await prisma.user.update({
-            where: { phone },
-            data: { auth_token: token }
-        });
+        return {
+            token: user.auth_token,
+            user: { name: user.name, business_name: user.business_name, lang: user.lang, reminder_template: user.reminder_template }
+        };
+    } catch (e: any) {
+        console.error("AUTH_ERROR:", e);
+        return { error: "Server Error: " + (e.message || "Unknown") };
     }
-
-    return {
-        token: user.auth_token,
-        user: { name: user.name, business_name: user.business_name, lang: user.lang, reminder_template: user.reminder_template }
-    };
 }
 
 export async function getUser(token: string) {
